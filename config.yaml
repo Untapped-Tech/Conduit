@@ -1,0 +1,30 @@
+server:
+    host: "0.0.0.0"
+    port: 8080
+    default_limit: 50
+
+database:
+    driver: "sqlite"
+    dsn: "./app.db?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+
+policy:
+    publicReads: true
+    publicWrites: true
+    publicMutation: true
+
+auth:
+    environmentEnabled: false
+    dbEnabled: false
+    dbAuth:
+        driver: "sqlite"
+        dsn: "./auth.db?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+        table: "users"
+        tokenColumn: "token"
+        roleColumn: "role"
+        roles:
+            admin: "admin"
+            readWrite: "rw"
+            readOnly: "ro"
+        cache:
+            capacity: 10000
+            ttlSeconds: 300
