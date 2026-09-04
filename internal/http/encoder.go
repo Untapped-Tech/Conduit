@@ -389,18 +389,15 @@ func (e *ResponseEncoder) EncodeResponse(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	rows, isSlice, ok := toOrderedRows(payload, schema)
-	if !ok {
-		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-		w.Header().Set("Content-Type", negotiated.ContentType())
-		w.WriteHeader(status)
-		_ = json.NewEncoder(w).Encode(payload)
-		return
-	}
-
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.Header().Set("Content-Type", negotiated.ContentType())
 	w.WriteHeader(status)
+
+	rows, isSlice, ok := toOrderedRows(payload, schema)
+	if !ok {		
+		_ = json.NewEncoder(w).Encode(payload)
+		return
+	}
 
 	rowElementName := "row"
 	if tableName == "columns" {
