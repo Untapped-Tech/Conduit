@@ -79,6 +79,7 @@ func TestMiddleware_ActionClassification(t *testing.T) {
 		{"GET", "/v1/table", domain.ActionReadTable},
 		{"POST", "/v1/table", domain.ActionWriteTable},
 		{"PUT", "/v1/table/1", domain.ActionWriteTable},
+		{"PATCH", "/v1/table/1", domain.ActionWriteTable},
 		{"DELETE", "/v1/table/1", domain.ActionWriteTable},
 		{"POST", "/v1/schema/table", domain.ActionMutateSchema},
 		{"DELETE", "/v1/schema/table", domain.ActionMutateSchema},
@@ -100,5 +101,25 @@ func TestMiddleware_ActionClassification(t *testing.T) {
 				t.Fatalf("unexpected error response %d for method=%s path=%s", rec.Code, tc.method, tc.path)
 			}
 		})
+	}
+}
+
+func TestMiddleware_PatchRequiresWrite(t *testing.T) {
+	policy := domain.PolicyConfig{
+		PublicReads:    true,
+		PublicWrites:   false,
+		PublicMutation: false,
+	}
+	authChain := []domain.AuthProvider{impl.NewGlobalPolicyAuth(&policy)}
+	mw := authPkg.AuthMiddleware(authChain, authPkg.NewDefaultTokenExtractor(), dummyResponderMW{})
+
+	req := httptest.NewRequest(http.MethodPatch, "/v1/table/1", nil)
+	rec := httptest.NewRecorder()
+	mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("PATCH should not reach handler when writes are denied")
+	})).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for PATCH without write access, got %d", rec.Code)
 	}
 }

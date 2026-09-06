@@ -32,7 +32,7 @@ func AuthMiddleware(authChain []domain.AuthProvider, tokenExtractor TokenExtract
 				}
 			} else if len(pathParts) > 0 {
 				tableName = pathParts[0]
-				if request.Method == http.MethodPost || request.Method == http.MethodPut || request.Method == http.MethodDelete {
+				if request.Method == http.MethodPost || request.Method == http.MethodPut || request.Method == http.MethodPatch || request.Method == http.MethodDelete {
 					targetAction = domain.ActionWriteTable
 				}
 			}

@@ -37,7 +37,7 @@ func (e *ResponseEncoder) NegotiateOutputFormat(r *http.Request, input domain.Fo
 		}
 	}
 
-	if input != "" && input != domain.FormatCSV {
+	if input != "" {
 		return input
 	}
 

@@ -94,3 +94,31 @@ func TestHTTP_MalformedPayloads(t *testing.T) {
 		t.Fatalf("expected 400 for malformed JSON, got %d", rec.Code)
 	}
 }
+
+func TestHTTP_PatchPartialUpdate_JSON(t *testing.T) {
+	srv := setupTestHTTPServer()
+	createSportsSchema(t, srv)
+
+	insertReq := httptest.NewRequest(http.MethodPost, "/v1/sports", strings.NewReader(`{"name":"Tennis","players":2}`))
+	insertReq.Header.Set("Content-Type", "application/json")
+	insertRec := httptest.NewRecorder()
+	srv.ServeHTTP(insertRec, insertReq)
+	if insertRec.Code != http.StatusCreated {
+		t.Fatalf("insert failed: %d, body=%s", insertRec.Code, insertRec.Body.String())
+	}
+
+	patchReq := httptest.NewRequest(http.MethodPatch, "/v1/sports/1", strings.NewReader(`{"players":4}`))
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchRec := httptest.NewRecorder()
+	srv.ServeHTTP(patchRec, patchReq)
+	if patchRec.Code != http.StatusOK {
+		t.Fatalf("patch failed: %d, body=%s", patchRec.Code, patchRec.Body.String())
+	}
+	body := patchRec.Body.String()
+	if !strings.Contains(body, `"players": 4`) {
+		t.Fatalf("expected patched players=4, got:\n%s", body)
+	}
+	if !strings.Contains(body, `"Tennis"`) {
+		t.Fatalf("expected name to remain Tennis after PATCH, got:\n%s", body)
+	}
+}

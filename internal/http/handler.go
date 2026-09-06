@@ -138,7 +138,7 @@ func (handler *APIHandler) handleCRUD(writer http.ResponseWriter, request *http.
 			schema, _ := handler.apiService.GetSchema(requestContext, tableName)
 			handler.responseEncoder.EncodeResponse(writer, request, http.StatusOK, singleRecord, domain.FormatJSON, tableName, schema)
 
-		case http.MethodPut:
+		case http.MethodPut, http.MethodPatch:
 			var recordPayload map[string]any
 			inputFormat, decodeError := DecodeInputPayload(request, &recordPayload)
 			if decodeError != nil {
