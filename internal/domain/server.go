@@ -28,6 +28,7 @@ const (
 	FormatXML    FormatType = "xml"
 	FormatTOML   FormatType = "toml"
 	FormatCSV    FormatType = "csv"
+	FormatCBOR   FormatType = "cbor"
 )
 
 func (formatFormat FormatType) ContentType() string {
@@ -44,6 +45,8 @@ func (formatFormat FormatType) ContentType() string {
 		return "application/x-ndjson"
 	case FormatCSV:
 		return "text/csv"
+	case FormatCBOR:
+		return "application/cbor"
 	}
 	return "application/json"
 }

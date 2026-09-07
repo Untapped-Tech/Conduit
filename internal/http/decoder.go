@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/fxamacker/cbor/v2"
 	"github.com/pelletier/go-toml/v2"
 	"github.com/untappedtech/conduit/internal/domain"
 	"gopkg.in/yaml.v3"
@@ -36,6 +37,10 @@ func DecodeInputPayload[T any](request *http.Request, targetObject *T) (domain.F
 	case strings.Contains(contentTypeHeader, "xml"):
 		parsedFormat = domain.FormatXML
 		decodeError = xml.NewDecoder(request.Body).Decode(targetObject)
+	case strings.Contains(contentTypeHeader, "cbor"):
+		parsedFormat = domain.FormatCBOR
+		dec := cbor.NewDecoder(request.Body)
+		decodeError = dec.Decode(targetObject)
 	default:
 		parsedFormat = domain.FormatJSON
 		decodeError = json.NewDecoder(request.Body).Decode(targetObject)
@@ -47,36 +52,46 @@ func DecodeInputPayload[T any](request *http.Request, targetObject *T) (domain.F
 func decodeCSVPayload[T any](body io.Reader, targetObject *T) error {
 	csvReader := csv.NewReader(body)
 	csvReader.TrimLeadingSpace = true
-	records, err := csvReader.ReadAll()
+
+	// Read header row
+	headers, err := csvReader.Read()
 	if err != nil {
-		return err
+		return fmt.Errorf("csv payload requires a header row: %w", err)
 	}
-	if len(records) < 2 {
-		return fmt.Errorf("csv payload requires a header row and at least one data row")
+	for i := range headers {
+		headers[i] = strings.TrimSpace(headers[i])
 	}
 
-	headers := records[0]
-	rows := make([]map[string]any, 0, len(records)-1)
-	for _, record := range records[1:] {
+	rows := make([]map[string]any, 0, 8)
+
+	for {
+		record, err := csvReader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("error reading csv record: %w", err)
+		}
 		if csvRecordEmpty(record) {
 			continue
 		}
+
 		row := make(map[string]any, len(headers))
 		for index, header := range headers {
-			trimmedHeader := strings.TrimSpace(header)
-			if trimmedHeader == "" {
+			if header == "" {
 				continue
 			}
 			cell := ""
 			if index < len(record) {
 				cell = record[index]
 			}
-			row[trimmedHeader] = coerceCSVCell(cell)
+			row[header] = coerceCSVCell(cell)
 		}
 		rows = append(rows, row)
 	}
+
 	if len(rows) == 0 {
-		return fmt.Errorf("csv payload requires a header row and at least one data row")
+		return fmt.Errorf("csv payload requires at least one non-empty data row")
 	}
 
 	return assignCSVRows(rows, targetObject)
@@ -86,7 +101,7 @@ func assignCSVRows[T any](rows []map[string]any, targetObject *T) error {
 	switch dest := any(targetObject).(type) {
 	case *map[string]any:
 		if len(rows) != 1 {
-			return fmt.Errorf("csv payload must contain exactly one data row")
+			return fmt.Errorf("csv payload must contain exactly one data row for map target")
 		}
 		*dest = rows[0]
 		return nil
@@ -99,17 +114,22 @@ func assignCSVRows[T any](rows []map[string]any, targetObject *T) error {
 	if err != nil {
 		return err
 	}
+
+	// Use JSON only as a structural bridge, but with already-typed values.
 	encoded, err := json.Marshal(payload)
 	if err != nil {
-		return err
+		return fmt.Errorf("csv to json marshal failed: %w", err)
 	}
-	return json.Unmarshal(encoded, targetObject)
+	if err := json.Unmarshal(encoded, targetObject); err != nil {
+		return fmt.Errorf("csv to target unmarshal failed: %w", err)
+	}
+	return nil
 }
 
 func csvPayloadForTarget(target any, rows []map[string]any) (any, error) {
 	value := reflect.ValueOf(target)
 	if value.Kind() != reflect.Pointer || value.IsNil() {
-		return nil, fmt.Errorf("csv decode target must be a pointer")
+		return nil, fmt.Errorf("csv decode target must be a non-nil pointer")
 	}
 
 	elem := value.Elem()
@@ -118,7 +138,7 @@ func csvPayloadForTarget(target any, rows []map[string]any) (any, error) {
 		return rows, nil
 	case reflect.Map:
 		if len(rows) != 1 {
-			return nil, fmt.Errorf("csv payload must contain exactly one data row")
+			return nil, fmt.Errorf("csv payload must contain exactly one data row for map target")
 		}
 		return rows[0], nil
 	case reflect.Struct:
@@ -126,12 +146,12 @@ func csvPayloadForTarget(target any, rows []map[string]any) (any, error) {
 			return map[string]any{sliceField: rows}, nil
 		}
 		if len(rows) != 1 {
-			return nil, fmt.Errorf("csv payload must contain exactly one data row")
+			return nil, fmt.Errorf("csv payload must contain exactly one data row for struct target")
 		}
 		return rows[0], nil
 	default:
 		if len(rows) != 1 {
-			return nil, fmt.Errorf("csv payload must contain exactly one data row")
+			return nil, fmt.Errorf("csv payload must contain exactly one data row for scalar target")
 		}
 		return rows[0], nil
 	}
@@ -146,10 +166,11 @@ func singleSliceJSONField(structType reflect.Type) string {
 			continue
 		}
 		sliceCount++
-		fieldName = field.Name
+		name := field.Name
 		if tag := field.Tag.Get("json"); tag != "" && tag != "-" {
-			fieldName = strings.Split(tag, ",")[0]
+			name = strings.Split(tag, ",")[0]
 		}
+		fieldName = name
 	}
 	if sliceCount == 1 {
 		return fieldName

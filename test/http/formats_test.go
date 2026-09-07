@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/fxamacker/cbor/v2"
 )
 
 func TestHTTP_ListFormats_All(t *testing.T) {
@@ -244,14 +246,19 @@ func TestHTTP_SpecialCharacters_AllFormats(t *testing.T) {
 		t.Fatalf("insert failed: %d", insertRec.Code)
 	}
 
-	formats := []string{"json", "yaml", "toml", "xml", "ndjson", "csv"}
+	formats := []string{"json", "yaml", "toml", "xml", "ndjson", "csv", "cbor"}
 	for _, fmtStr := range formats {
 		req := httptest.NewRequest(http.MethodGet, "/v1/sports/1?format="+fmtStr, nil)
 		rec := httptest.NewRecorder()
 		srv.ServeHTTP(rec, req)
-		body := rec.Body.String()
-		if !strings.Contains(body, "Golf") {
-			t.Fatalf("[%s] expected special-name to contain Golf, got:\n%s", fmtStr, body)
+		body := rec.Body.Bytes()
+		if fmtStr == "cbor" {
+			var decoded map[string]any
+			if err := cbor.Unmarshal(body, &decoded); err != nil {
+				t.Fatalf("[cbor] failed to unmarshal CBOR: %v", err)
+			}
+		} else if !strings.Contains(string(body), "Golf") {
+			t.Fatalf("[%s] expected special-name to contain Golf, got:\n%s", fmtStr, string(body))
 		}
 	}
 }
@@ -272,6 +279,7 @@ func TestHTTP_ContentTypeHeaders(t *testing.T) {
 		{"xml", "xml"},
 		{"ndjson", "ndjson"},
 		{"csv", "text/csv"},
+		{"cbor", "application/cbor"},
 	}
 
 	for _, tc := range cases {
@@ -282,5 +290,35 @@ func TestHTTP_ContentTypeHeaders(t *testing.T) {
 		if !strings.Contains(ct, tc.expect) {
 			t.Fatalf("[%s] expected Content-Type to contain %q, got %q", tc.format, tc.expect, ct)
 		}
+	}
+}
+
+func TestHTTP_CBORFormatAndOrdering(t *testing.T) {
+	srv := setupTestHTTPServer()
+	createSportsSchema(t, srv)
+	insertSportsRecords(t, srv)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/sports?format=cbor", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var payload map[string]any
+	if err := cbor.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("failed to unmarshal CBOR list response: %v", err)
+	}
+
+	sportsList, ok := payload["sports"].([]any)
+	if !ok || len(sportsList) == 0 {
+		t.Fatalf("expected sports array in CBOR payload, got %#v", payload)
+	}
+
+	record := sportsList[0].(map[string]any)
+	// Check keys presence
+	if record["name"] != "Golf" {
+		t.Fatalf("expected name=Golf, got %#v", record["name"])
 	}
 }

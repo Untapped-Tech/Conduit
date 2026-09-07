@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/fxamacker/cbor/v2"
 	"github.com/untappedtech/conduit/internal/domain"
 )
 
@@ -17,6 +18,18 @@ type ResponseEncoder struct{}
 
 func NewResponseEncoder() *ResponseEncoder {
 	return &ResponseEncoder{}
+}
+
+type OrderedRow struct {
+	Keys   []string
+	Values []any
+}
+
+func derefInt(i *int) int {
+	if i == nil {
+		return 999999
+	}
+	return *i
 }
 
 func (e *ResponseEncoder) NegotiateOutputFormat(r *http.Request, input domain.FormatType) domain.FormatType {
@@ -34,6 +47,8 @@ func (e *ResponseEncoder) NegotiateOutputFormat(r *http.Request, input domain.Fo
 			return domain.FormatTOML
 		case "csv":
 			return domain.FormatCSV
+		case "cbor":
+			return domain.FormatCBOR
 		}
 	}
 
@@ -56,7 +71,7 @@ func (e *ResponseEncoder) EncodeError(w http.ResponseWriter, r *http.Request, st
 		_, _ = w.Write([]byte(xml.Header))
 		_, _ = fmt.Fprintf(w, "<response>\n  <error>%s</error>\n  <code>%d</code>\n</response>\n", escapeXMLText(msg), status)
 	case domain.FormatYAML:
-		_, _ = fmt.Fprintf(w, "error: %s\ncode: %d\n", msg, status)
+		_, _ = fmt.Fprintf(w, "error: %q\ncode: %d\n", msg, status)
 	case domain.FormatTOML:
 		_, _ = fmt.Fprintf(w, "error = %q\ncode = %d\n", msg, status)
 	case domain.FormatCSV:
@@ -64,30 +79,24 @@ func (e *ResponseEncoder) EncodeError(w http.ResponseWriter, r *http.Request, st
 		_ = csvWriter.Write([]string{"error", "code"})
 		_ = csvWriter.Write([]string{msg, fmt.Sprintf("%d", status)})
 		csvWriter.Flush()
+	case domain.FormatCBOR:
+		enc := cborCanonicalEncoder()
+		data, _ := enc.Marshal(map[string]any{
+			"error": msg,
+			"code":  status,
+		})
+		_, _ = w.Write(data)
 	case domain.FormatNDJSON:
-		_, _ = fmt.Fprintf(w, "{\"error\":%q,\"code\":%d}\n", msg, status)
+		_, _ = fmt.Fprintf(w, "{\"error\": %q, \"code\": %d}\n", msg, status)
 		if flusher, ok := w.(http.Flusher); ok {
 			flusher.Flush()
 		}
 		return
-
 	case domain.FormatJSON:
 		fallthrough
 	default:
 		_, _ = fmt.Fprintf(w, "{\n  \"error\": %q,\n  \"code\": %d\n}\n", msg, status)
 	}
-}
-
-type OrderedRow struct {
-	Keys   []string
-	Values []any
-}
-
-func derefInt(i *int) int {
-	if i == nil {
-		return 999999
-	}
-	return *i
 }
 
 func getOrderedKeys(record map[string]any, schema []domain.ColumnDef) []string {
@@ -327,20 +336,17 @@ func (e *ResponseEncoder) writeListOfStrings(w http.ResponseWriter, format domai
 		if flusher, ok := w.(http.Flusher); ok {
 			flusher.Flush()
 		}
-
 	case domain.FormatYAML:
 		_, _ = fmt.Fprintf(w, "%s:\n", tableName)
 		for _, item := range items {
 			_, _ = fmt.Fprintf(w, "  - %s\n", item)
 		}
-
 	case domain.FormatTOML:
 		var quoted []string
 		for _, item := range items {
 			quoted = append(quoted, fmt.Sprintf("%q", item))
 		}
 		_, _ = fmt.Fprintf(w, "%s = [%s]\n", tableName, strings.Join(quoted, ", "))
-
 	case domain.FormatXML:
 		_, _ = w.Write([]byte(xml.Header))
 		_, _ = fmt.Fprintf(w, "<%s>\n", tableName)
@@ -348,15 +354,19 @@ func (e *ResponseEncoder) writeListOfStrings(w http.ResponseWriter, format domai
 			_, _ = fmt.Fprintf(w, "  <row>%s</row>\n", escapeXMLText(item))
 		}
 		_, _ = fmt.Fprintf(w, "</%s>\n", tableName)
-
 	case domain.FormatCSV:
 		csvWriter := csv.NewWriter(w)
-		_ = csvWriter.Write([]string{"table_name"})
+		_ = csvWriter.Write([]string{tableName})
 		for _, item := range items {
 			_ = csvWriter.Write([]string{item})
 		}
 		csvWriter.Flush()
-
+	case domain.FormatCBOR:
+		enc := cborCanonicalEncoder()
+		data, _ := enc.Marshal(map[string]any{
+			tableName: items,
+		})
+		_, _ = w.Write(data)
 	case domain.FormatJSON:
 		fallthrough
 	default:
@@ -394,7 +404,7 @@ func (e *ResponseEncoder) EncodeResponse(w http.ResponseWriter, r *http.Request,
 	w.WriteHeader(status)
 
 	rows, isSlice, ok := toOrderedRows(payload, schema)
-	if !ok {		
+	if !ok {
 		_ = json.NewEncoder(w).Encode(payload)
 		return
 	}
@@ -492,6 +502,18 @@ func (e *ResponseEncoder) EncodeResponse(w http.ResponseWriter, r *http.Request,
 			}
 		}
 
+	case domain.FormatCBOR:
+		cborBytes, err := encodeCBORTable(tableName, rows, isSlice)
+		if err != nil {
+			// Fallback: encode the original payload in CBOR using the generic encoder
+			enc := cborCanonicalEncoder()
+			if fallback, ferr := enc.Marshal(payload); ferr == nil {
+				_, _ = w.Write(fallback)
+			}
+			return
+		}
+		_, _ = w.Write(cborBytes)
+
 	case domain.FormatJSON:
 		fallthrough
 	default:
@@ -517,4 +539,43 @@ func (e *ResponseEncoder) EncodeResponse(w http.ResponseWriter, r *http.Request,
 			_, _ = fmt.Fprintf(w, "{\n  %q: {\n%s\n  }\n}\n", tableName, strings.Join(fieldParts, ",\n"))
 		}
 	}
+}
+
+func cborCanonicalEncoder() cbor.EncMode {
+	encOpts := cbor.EncOptions{
+		Sort: cbor.SortCanonical,
+	}
+	encMode, _ := encOpts.EncMode()
+	return encMode
+}
+func orderedRowToMap(or OrderedRow) map[string]any {
+	m := make(map[string]any, len(or.Keys))
+	for i, k := range or.Keys {
+		m[k] = or.Values[i]
+	}
+	return m
+}
+
+func encodeCBORTable(tableName string, rows []OrderedRow, isSlice bool) ([]byte, error) {
+	enc := cborCanonicalEncoder()
+
+	if isSlice {
+		out := make([]map[string]any, len(rows))
+		for i, row := range rows {
+			out[i] = orderedRowToMap(row)
+		}
+		return enc.Marshal(map[string]any{
+			tableName: out,
+		})
+	}
+
+	if len(rows) == 0 {
+		return enc.Marshal(map[string]any{
+			tableName: map[string]any{},
+		})
+	}
+
+	return enc.Marshal(map[string]any{
+		tableName: orderedRowToMap(rows[0]),
+	})
 }
